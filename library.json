@@ -1,0 +1,159 @@
+{
+ "license": "Mixkit Free License (uso en YouTube permitido, sin atribución)",
+ "sfx": {
+  "viento_niebla": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2658/2658-preview.mp3",
+   "desc": "viento ambiente, fondo largo"
+  },
+  "ambiente_terror": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2482/2482-preview.mp3",
+   "desc": "ambiente de terror, fondo largo"
+  },
+  "estatica_radio": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2561/2561-preview.mp3",
+   "desc": "estática de radio corta"
+  },
+  "radio_terror": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2566/2566-preview.mp3",
+   "desc": "frecuencia de radio aterradora, más larga"
+  },
+  "radio_rota": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2563/2563-preview.mp3",
+   "desc": "señal de radio rota"
+  },
+  "glitch_estatica": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/1457/1457-preview.mp3",
+   "desc": "glitch con estática"
+  },
+  "glitch_corto": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2595/2595-preview.mp3",
+   "desc": "glitch eléctrico chico, chiste/error"
+  },
+  "sirena_alerta": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/1652/1652-preview.mp3",
+   "desc": "sirena manual de alarma (reemplazo libre de la sirena)"
+  },
+  "pisadas_pavimento": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/542/542-preview.mp3",
+   "desc": "pisadas en pavimento"
+  },
+  "pisadas_bosque": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/1230/1230-preview.mp3",
+   "desc": "pisadas en tierra"
+  },
+  "golpe_seco": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2182/2182-preview.mp3",
+   "desc": "golpe seco de madera"
+  },
+  "impacto_grave": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/788/788-preview.mp3",
+   "desc": "impacto cinemático grande, blackout"
+  },
+  "whoosh_impacto": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/1143/1143-preview.mp3",
+   "desc": "whoosh con impacto profundo"
+  },
+  "whoosh_rapido": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/1492/1492-preview.mp3",
+   "desc": "whoosh rápido de transición"
+  },
+  "transicion_terror": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2484/2484-preview.mp3",
+   "desc": "transición de terror"
+  },
+  "barrido_oscuro": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2630/2630-preview.mp3",
+   "desc": "barrido de oscuridad"
+  },
+  "gruñido_criatura": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/1973/1973-preview.mp3",
+   "desc": "gruñido de criatura/zombie"
+  },
+  "rugido_bestia": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/13/13-preview.mp3",
+   "desc": "rugido agresivo"
+  },
+  "puerta_cruje": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/1163/1163-preview.mp3",
+   "desc": "puerta que cruje con viento"
+  },
+  "piso_cruje": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/337/337-preview.mp3",
+   "desc": "piso de madera que cruje"
+  },
+  "latido": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/497/497-preview.mp3",
+   "desc": "latido cinemático de fondo"
+  },
+  "latido_transicion": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/489/489-preview.mp3",
+   "desc": "latido de terror en transición"
+  },
+  "golpe_terror": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/565/565-preview.mp3",
+   "desc": "golpe de tambor de terror"
+  },
+  "sting_suspenso": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/685/685-preview.mp3",
+   "desc": "bajo de suspenso/misterio"
+  },
+  "sting_cliffhanger": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/679/679-preview.mp3",
+   "desc": "golpe cinemático glitch, cliffhanger"
+  },
+  "hit_vidrio": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/677/677-preview.mp3",
+   "desc": "golpe de vidrio suspenso"
+  },
+  "notificacion": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/2354/2354-preview.mp3",
+   "desc": "pop de mensaje tipo WhatsApp"
+  },
+  "campana_notif": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/933/933-preview.mp3",
+   "desc": "campana de notificación"
+  },
+  "auto_choque": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/1555/1555-preview.mp3",
+   "desc": "choque (juguete, usar bajo)"
+  },
+  "tic_tac": {
+   "url": "https://assets.mixkit.co/active_storage/sfx/1059/1059-preview.mp3",
+   "desc": "reloj tic tac"
+  }
+ },
+ "music": {
+  "piano_terror": {
+   "url": "https://assets.mixkit.co/music/671/671.mp3",
+   "desc": "piano de terror, melancólico (reemplazo de Yamaoka)"
+  },
+  "ecos": {
+   "url": "https://assets.mixkit.co/music/188/188.mp3",
+   "desc": "ambiente oscuro de ecos"
+  },
+  "sombras": {
+   "url": "https://assets.mixkit.co/music/64/64.mp3",
+   "desc": "Dark Shadows, tensión"
+  },
+  "delirio": {
+   "url": "https://assets.mixkit.co/music/605/605.mp3",
+   "desc": "delirio, inquietante"
+  },
+  "suenos_feedback": {
+   "url": "https://assets.mixkit.co/music/588/588.mp3",
+   "desc": "drone etéreo"
+  },
+  "bosque_niebla": {
+   "url": "https://assets.mixkit.co/music/148/148.mp3",
+   "desc": "neblina en el bosque, calmo"
+  },
+  "vampiros": {
+   "url": "https://assets.mixkit.co/music/892/892.mp3",
+   "desc": "oscuro con ritmo"
+  },
+  "outro_epico": {
+   "url": "https://assets.mixkit.co/music/76/76.mp3",
+   "desc": "épico, cierre"
+  }
+ }
+}
