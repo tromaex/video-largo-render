@@ -11,7 +11,8 @@ const DATA = process.env.DATA || '/data';
 const THREADS = process.env.FF_THREADS || '3';
 const LIB = require('./library.json');
 const W = 1920, H = 1080, FPS = 30;
-const FONT = fs.existsSync('/usr/share/fonts/truetype/anton/Anton-Regular.ttf') ? '/usr/share/fonts/truetype/anton/Anton-Regular.ttf' : '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
+const FONTDIR = ['/app/fonts', '/usr/share/fonts/truetype/anton'].find(d => fs.existsSync(path.join(d, 'Anton-Regular.ttf')));
+const FONT = FONTDIR ? path.join(FONTDIR, 'Anton-Regular.ttf') : '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
 for (const d of ['cache', 'jobs', 'lib']) fs.mkdirSync(path.join(DATA, d), { recursive: true });
 
 const jobs = new Map();
@@ -197,7 +198,7 @@ async function processJob(job) {
   if (spec.subtitles && spec.subtitles.srt && spec.subtitles.burn !== false) {
     const sf = path.join(dir, 'subs.srt'); await fsp.writeFile(sf, String(spec.subtitles.srt));
     const st = spec.subtitles.style || 'FontName=Anton,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H000B0B0B,BorderStyle=1,Outline=2.2,Shadow=0,MarginV=38,Alignment=2';
-    vf.push(`subtitles='${sf.replace(/'/g, "")}':fontsdir=/usr/share/fonts/truetype/anton:force_style='${st}'`);
+    vf.push(`subtitles='${sf.replace(/'/g, "")}':fontsdir=${FONTDIR || '/usr/share/fonts'}:force_style='${st}'`);
   }
   fc.push(vf.join(',') + ',format=yuv420p[vout]');
   const out = path.join(dir, 'final.mp4');
