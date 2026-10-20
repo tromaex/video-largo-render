@@ -14,7 +14,7 @@ const W = 1920, H = 1080, FPS = 30;
 const FONTDIR = ['/app/fonts', '/usr/share/fonts/truetype/anton'].find(d => fs.existsSync(path.join(d, 'Anton-Regular.ttf')));
 const FONT = FONTDIR ? path.join(FONTDIR, 'Anton-Regular.ttf') : '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
 const PUBLIC = (process.env.PUBLIC_URL || 'https://video.licjuanpablo.com.ar').replace(/\/$/, '');
-for (const d of ['cache', 'jobs', 'lib', 'pub', 'projects', 'scenes']) fs.mkdirSync(path.join(DATA, d), { recursive: true });
+for (const d of ['cache', 'jobs', 'lib', 'pub', 'projects', 'scenes', 'memes', 'assets']) fs.mkdirSync(path.join(DATA, d), { recursive: true });
 
 const jobs = new Map();
 const queue = [];
@@ -103,11 +103,13 @@ async function download0(url, job) {
     if (fs.existsSync(f) && fs.statSync(f).size > 0) return f;
     if (job) log(job, 'yt-dlp ' + url);
     const args = ['--no-playlist', '--no-progress', '-f', 'bv*[height<=720][vcodec^=avc1]/bv*[height<=720]/b[height<=720]/b', '--remux-video', 'mp4', '-o', path.join(DATA, 'cache', key + '.%(ext)s'), url];
-    if (process.env.YTDLP_EXTRA) args.unshift(...process.env.YTDLP_EXTRA.split(' '));
+    args.unshift(...ytArgs());
     await run('yt-dlp', args, job);
     if (!fs.existsSync(f)) { const alt = fs.readdirSync(path.join(DATA, 'cache')).find(n => n.startsWith(key + '.')); if (!alt) throw new Error('yt-dlp: no output'); await fsp.rename(path.join(DATA, 'cache', alt), f); }
     return f;
   }
+  if (url.startsWith(PUBLIC + '/memes/')) { const p = path.join(MEMES, path.basename(url.split('?')[0])); if (fs.existsSync(p)) return p; }
+  if (url.startsWith(PUBLIC + '/lib/')) { const p = path.join(DATA, 'lib', path.basename(url.split('?')[0])); if (fs.existsSync(p)) return p; }
   if (url.startsWith(PUBLIC + '/pub/')) { const p = path.join(DATA, 'pub', ...url.slice(PUBLIC.length + 5).split('?')[0].split('/').map(decodeURIComponent)); if (!p.includes('..') && fs.existsSync(p)) return p; }
   url = normUrl(url);
   const key = crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
@@ -196,7 +198,12 @@ async function renderScene(job, s, i, dir) {
     else inArgs = ['-stream_loop', '-1', '-ss', String(src.offset || 0), '-i', f];
   }
   const c = Math.min(0.3, Math.max(0, +src.crop || 0));
-  let vf = `fps=${FPS},` + (c ? `crop=iw*${(1 - c).toFixed(3)}:ih*${(1 - c).toFixed(3)},` : '') + effectFilter(s.effect, frames);
+  let vf = `fps=${FPS},` + (c ? `crop=iw*${(1 - c).toFixed(3)}:ih*${(1 - c).toFixed(3)},` : '');
+  if ((s.crt3d || src.frame === 'crt') && LIB.crt3d) { // v5: TV CRT en un cuarto (zoom 3D a la pantalla, o logo/imagen en la tele)
+    const rf = await download(LIB.crt3d.room, job), bf = await download(LIB.crt3d.bezel, job);
+    const cc = s.crt3d ? { ...s.crt3d } : { type: 'in', pmax: 0.62, fit: true, scan: true, bg: src.crt_bg || '0x0b0b0b', zoom_dur: Math.max(1.5, dur - 0.3), hold: 0.15 };
+    vf += (cc.fit ? '' : `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,`) + crt3dFilter({ ...cc, screen: LIB.crt3d.screen }, dur, rf, bf);
+  } else vf += (src.frame ? frameFilter(src.frame, dur) : null) || effectFilter(s.effect, frames);
   if (s.text) {
     const pos = s.text_pos === 'center' ? `x=(w-text_w)/2:y=(h-text_h)/2` : `x=(w-text_w)/2:y=h-text_h-230`;
     const size = s.text_size || (s.text_pos === 'center' ? 92 : 58);
@@ -209,7 +216,7 @@ async function renderScene(job, s, i, dir) {
   vf += ',format=yuv420p';
   // v4: caché de escenas (modo proyecto): una toma idéntica no se vuelve a renderizar
   let ck = null;
-  try { const st = srcFile ? fs.statSync(srcFile) : null; ck = crypto.createHash('sha1').update(JSON.stringify({ v: 4, vf, inArgs: inArgs.map(x => x === srcFile ? 'SRC' : x), src: st ? [srcFile, st.size] : null, dur: dur.toFixed(3), frames })).digest('hex').slice(0, 24); } catch (e) {}
+  try { const st = srcFile ? fs.statSync(srcFile) : null; ck = crypto.createHash('sha1').update(JSON.stringify({ v: 5, vf, inArgs: inArgs.map(x => x === srcFile ? 'SRC' : x), src: st ? [srcFile, st.size] : null, dur: dur.toFixed(3), frames })).digest('hex').slice(0, 24); } catch (e) {}
   const cached = ck ? path.join(DATA, 'scenes', ck + '.mp4') : null;
   if (cached && fs.existsSync(cached) && fs.statSync(cached).size > 0) { job.cacheHits = (job.cacheHits || 0) + 1; if (job.sceneFiles) job.sceneFiles.add(cached); const nowT = new Date(); fs.utimesSync(cached, nowT, nowT); return cached; }
   await run('ffmpeg', ['-y', '-v', 'error', ...inArgs, '-t', dur.toFixed(3), '-vf', vf, '-frames:v', String(frames), '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-r', String(FPS), '-threads', THREADS, out], job);
@@ -276,7 +283,8 @@ async function processJob(job) {
     musLabels.push(`[m${j}]`); idx++;
   }
   if (musLabels.length) {
-    fc.push(`${musLabels.join('')}amix=inputs=${musLabels.length}:normalize=0:duration=longest[mus]`);
+    const mute = (spec.mute || []).filter(m => m.end > m.start).map(m => `between(t,${(+m.start).toFixed(2)},${(+m.end).toFixed(2)})`);
+    fc.push(`${musLabels.join('')}amix=inputs=${musLabels.length}:normalize=0:duration=longest${mute.length ? `,volume='if(${mute.join('+')},0,1)':eval=frame` : ''}[mus]`);
     const dk = spec.ducking || {};
     fc.push(`[mus][sc]sidechaincompress=threshold=${dk.threshold ?? 0.02}:ratio=${dk.ratio ?? 6}:attack=${dk.attack ?? 30}:release=${dk.release ?? 600}:makeup=1[musd]`);
     mixA.push('[musd]');
@@ -298,7 +306,7 @@ async function processJob(job) {
   if (look.desaturate) vf.push(`eq=saturation=${look.desaturate}`);
   if (look.grain) vf.push(`noise=alls=${look.grain === true ? 5 : look.grain}:allf=t`);
   if (look.vignette) vf.push('vignette=PI/5');
-  if (spec.subtitles && spec.subtitles.srt && spec.subtitles.burn !== false) {
+  if (spec.subtitles && spec.subtitles.srt && spec.subtitles.burn === true) {
     const sf = path.join(dir, 'subs.srt'); await fsp.writeFile(sf, String(spec.subtitles.srt));
     const st = spec.subtitles.style || 'FontName=Anton,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H000B0B0B,BorderStyle=1,Outline=2.2,Shadow=0,MarginV=38,Alignment=2';
     vf.push(`subtitles='${sf.replace(/'/g, "")}':fontsdir=${FONTDIR || '/usr/share/fonts'}:force_style='${st}'`);
@@ -423,6 +431,118 @@ async function cleanup() {
 }
 setInterval(cleanup, 6 * 3600e3);
 
+
+// ================= v5 (2026-10-20): biblioteca de memes, assets gratis por nombre, encuadres (reel/crt/meme), zoom 3D a la TV =================
+const MEMES = path.join(DATA, 'memes'); const ADIR = path.join(DATA, 'assets'); fs.mkdirSync(MEMES, { recursive: true }); fs.mkdirSync(ADIR, { recursive: true });
+const UA = { 'User-Agent': 'video-largo-render/5 (https://video.licjuanpablo.com.ar; juanpau) node-fetch' };
+function ytArgs() { const a = ['--js-runtimes', 'node']; const ck = path.join(DATA, 'yt_cookies.txt'); if (fs.existsSync(ck)) a.push('--cookies', ck); if (process.env.YTDLP_EXTRA) a.push(...process.env.YTDLP_EXTRA.split(' ')); return a; }
+function runOut(cmd, args, ms) { return new Promise((res, rej) => { const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] }); let o = '', e = ''; const to = ms ? setTimeout(() => p.kill('SIGKILL'), ms) : null;
+  p.stdout.on('data', d => o += d); p.stderr.on('data', d => { e += d; if (e.length > 40000) e = e.slice(-20000); }); p.on('close', c => { if (to) clearTimeout(to); c === 0 ? res(o) : rej(new Error(`${cmd} exit ${c}: ${e.slice(-1800)}`)); }); }); }
+const nrm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9ñ ]+/g, ' ').replace(/\s+/g, ' ').trim();
+const memeIdx = () => { try { return JSON.parse(fs.readFileSync(path.join(MEMES, 'index.json'), 'utf8')); } catch (e) { return { updated: null, memes: [] }; } };
+const memeSave = ix => { ix.updated = new Date().toISOString(); fs.writeFileSync(path.join(MEMES, 'index.json.tmp'), JSON.stringify(ix, null, 1)); fs.renameSync(path.join(MEMES, 'index.json.tmp'), path.join(MEMES, 'index.json')); };
+async function probeAll(f) { const o = await runOut('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,width,height:format=duration', '-of', 'json', f]); const j = JSON.parse(o); const v = (j.streams || []).find(s => s.codec_type === 'video');
+  return { dur: parseFloat(j.format?.duration || 0), has_audio: (j.streams || []).some(s => s.codec_type === 'audio'), w: v?.width || 0, h: v?.height || 0 }; }
+// {id, url (YouTube / ytsearch / mp4 directo) | query, start, dur, audio_url?, emocion[], tema, desc, tags[], risk} -> entrada del índice
+async function memeAdd(b) {
+  const id = pid(b.id || ('m_' + nrm(b.query || b.desc || '').replace(/ /g, '_').slice(0, 40) || crypto.randomBytes(4).toString('hex')));
+  const risky = /simpson|content.?id|alto/i.test(String(b.risk || '') + ' ' + String(b.tema || '') + ' ' + String(b.query || ''));
+  const maxD = risky ? 3 : 4; const dur = Math.min(maxD, Math.max(0.8, +b.dur || 3)); const st = Math.max(0, +b.start || 0);
+  const tmp = path.join(DATA, 'cache', 'meme_' + id + '_' + crypto.randomBytes(3).toString('hex')); let src = null, meta = {};
+  try {
+    if (b.url && !isYT(b.url) && !/^ytsearch/i.test(b.url)) { src = await download(b.url); meta = { url: b.url }; }
+    else {
+      const q = b.url || `ytsearch5:${b.query}`;
+      const args = [...ytArgs(), '--no-playlist', '--no-progress', '--max-downloads', '1', '--match-filter', 'duration < 900', '-f', 'bv*[height<=720]+ba/b[height<=720]/bv*+ba/b', '--merge-output-format', 'mp4',
+        '--download-sections', `*${st}-${(st + dur + 0.6).toFixed(1)}`, '--force-keyframes-at-cuts', '--print', 'after_move:%(id)s\t%(title)s\t%(duration)s\t%(filepath)s', '-o', tmp + '.%(ext)s', q];
+      let out = ''; try { out = await runOut('yt-dlp', args, 240000); } catch (e) { if (!/exit 101/.test(e.message)) throw e; out = e.message; }
+      const line = out.split('\n').find(l => l.split('\t').length >= 4); if (!line) throw new Error('yt-dlp sin resultado: ' + out.slice(-600));
+      const [yid, title, vdur, fp] = line.split('\t'); src = fp.trim(); meta = { yt_id: yid, title, url: 'https://www.youtube.com/watch?v=' + yid, video_dur: +vdur || null };
+    }
+    const out = path.join(MEMES, id + '.mp4'); const pa = await probeAll(src); const fromYT = !!meta.yt_id;
+    const inA = ['-y', '-v', 'error', ...(fromYT ? [] : ['-ss', String(st)]), '-i', src]; let amap = ['-map', '0:v:0'];
+    if (b.audio_url) { const af = await download(b.audio_url); inA.push('-i', af); amap.push('-map', '1:a:0'); } else if (pa.has_audio) amap.push('-map', '0:a:0');
+    await run('ffmpeg', [...inA, ...amap, '-t', dur.toFixed(2), '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-shortest', '-movflags', '+faststart', out]);
+    await run('ffmpeg', ['-y', '-v', 'error', '-ss', String(Math.min(1, dur / 2)), '-i', out, '-frames:v', '1', '-q:v', '3', path.join(MEMES, id + '.jpg')]);
+    const pf = await probeAll(out);
+    const e = { id, file: id + '.mp4', url: `${PUBLIC}/memes/${id}.mp4`, thumb: `${PUBLIC}/memes/${id}.jpg`, dur: +pf.dur.toFixed(2), has_audio: pf.has_audio,
+      emocion: [].concat(b.emocion || []).slice(0, 6), tema: String(b.tema || '').slice(0, 80), desc: String(b.desc || meta.title || '').slice(0, 160), tags: [].concat(b.tags || []).map(String).slice(0, 12),
+      source: { ...meta, query: b.query || null, start: st }, risk: risky ? 'alto (Content ID: usar ≤3 s, con zoom o marco)' : String(b.risk || 'bajo'), added: new Date().toISOString() };
+    const ix = memeIdx(); ix.memes = ix.memes.filter(m => m.id !== id).concat(e); memeSave(ix); return e;
+  } finally { for (const n of fs.readdirSync(path.join(DATA, 'cache')).filter(n => n.startsWith(path.basename(tmp)))) await fsp.unlink(path.join(DATA, 'cache', n)).catch(() => {}); }
+}
+function memeFind(q) { const ix = memeIdx(); const w = nrm([].concat(q.tags || [], q.emocion || [], q.query || '', q.tema || '').join(' ')).split(' ').filter(x => x.length > 2); if (!w.length) return null;
+  let best = null, bs = 0; for (const m of ix.memes) { const hay = nrm([m.id, m.desc, m.tema, ...(m.tags || []), ...(m.emocion || [])].join(' ')); const s = w.filter(x => hay.includes(x)).length / w.length; if (s > bs) { bs = s; best = m; } } return bs >= 0.5 ? best : null; }
+// ---- assets gratis por nombre (Wikipedia/Commons/Fandom/Pollinations), re-hosteados en /pub (permanentes)
+const aIdxF = path.join(ADIR, 'index.json'); const aIdx = () => { try { return JSON.parse(fs.readFileSync(aIdxF, 'utf8')); } catch (e) { return {}; } };
+async function hostImage(url, name) { const r = await fetch(url, { headers: UA, signal: AbortSignal.timeout(150000) }); if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url.slice(0, 90)); const ct = r.headers.get('content-type') || '';
+  if (!/image\//.test(ct)) throw new Error('no es imagen (' + ct + ')'); const buf = Buffer.from(await r.arrayBuffer()); if (buf.length < 5000) throw new Error('imagen vacía');
+  const ext = /png/.test(ct) ? 'png' : (/webp/.test(ct) ? 'webp' : 'jpg'); const p = pubSave(name.replace(/\.\w+$/, '') + '.' + ext); fs.writeFileSync(p.file, buf); fs.writeFileSync(path.join(path.dirname(p.file), '.keep'), '');
+  let file = p.file, url2 = p.url; if (ext === 'webp') { const j = p.file.replace(/\.webp$/, '.jpg'); await run('ffmpeg', ['-y', '-v', 'error', '-i', p.file, j]); file = j; url2 = p.url.replace(/\.webp$/, '.jpg'); }
+  const pa = await probeAll(file); if (pa.w < 220 || pa.h < 160) throw new Error(`imagen chica ${pa.w}x${pa.h}`); return { url: url2, w: pa.w, h: pa.h }; }
+const tokOK = (q, title, need) => { const a = nrm(q).split(' ').filter(x => x.length > 2), b = nrm(title); if (!a.length) return false; return a.filter(x => b.includes(x)).length / a.length >= (need || 0.6); };
+async function wikiImg(q, lang, kind) {
+  const j = await getJSON(`https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&srlimit=4&format=json`);
+  for (const r of ((j.query || {}).search || [])) { if (!tokOK(q, r.title, kind === 'persona' ? 0.99 : 0.5)) continue;
+    const p = await getJSON(`https://${lang}.wikipedia.org/w/api.php?action=query&prop=pageimages|info&piprop=thumbnail|name|original&pithumbsize=1600&inprop=url&titles=${encodeURIComponent(r.title)}&redirects=1&format=json`);
+    const pg = Object.values((p.query || {}).pages || {})[0] || {}; const src = (pg.thumbnail && pg.thumbnail.source) || (pg.original && pg.original.source);
+    if (src) return { src, title: r.title, page: pg.fullurl, file: pg.pageimage, source: `Wikipedia (${lang})` }; }
+  return null; }
+async function commonsImg(q) { const j = await getJSON(`https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent('filetype:bitmap ' + q)}&gsrnamespace=6&gsrlimit=8&prop=imageinfo&iiprop=url|extmetadata|size&iiurlwidth=1600&format=json`);
+  const pages = Object.values((j.query || {}).pages || {}).sort((a, b) => (a.index || 0) - (b.index || 0));
+  for (const pg of pages) { const ii = (pg.imageinfo || [])[0]; if (!ii || ii.width < 400) continue; if (!tokOK(q, pg.title, 0.5)) continue; const md = ii.extmetadata || {};
+    return { src: ii.thumburl || ii.url, title: pg.title, page: ii.descriptionurl, source: 'Wikimedia Commons', license: (md.LicenseShortName || {}).value || null, author: String((md.Artist || {}).value || '').replace(/<[^>]+>/g, '').slice(0, 80) || null }; }
+  return null; }
+async function fandomImg(q, game) { const base = String(game || '').replace(/\(.*?\)/g, '').trim(); const fr = base.replace(/\b(\d+|i{1,3}|iv|v)\b\s*$/i, '').trim() || base;
+  for (const sl of [...new Set([fr.toLowerCase().replace(/[^a-z0-9]/g, ''), fr.toLowerCase().replace(/[^a-z0-9]+/g, '-')])].filter(Boolean)) { const api = `https://${sl}.fandom.com/api.php`;
+    try { const t = await mwSearch(api, q, 5); for (const title of t) { if (!tokOK(q, title, 0.5)) continue;
+        const p = await getJSON(`${api}?action=query&prop=pageimages|info&piprop=thumbnail|original&pithumbsize=1600&inprop=url&titles=${encodeURIComponent(title)}&format=json`);
+        const pg = Object.values((p.query || {}).pages || {})[0] || {}; const src = (pg.original && pg.original.source) || (pg.thumbnail && pg.thumbnail.source); if (src) return { src, title, page: pg.fullurl, source: `Fandom (${sl})` }; } } catch (e) {} }
+  return null; }
+async function aiImg(prompt, seed) { const u = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1280&height=720&nologo=true&seed=${seed || 7}&model=flux`; return { src: u, title: prompt, source: 'Pollinations.ai (IA, gratis)', ai: true }; }
+// item: {key, kind: persona|logo|obra|objeto|meme, q, q_en?, alt[]?, ai_prompt?, prefer_ai?, game?, meme?{query,tags,emocion,tema,desc,dur,start,url}}
+async function assetFind(it, game) {
+  const kind = it.kind || 'objeto'; const ck = kind + ':' + nrm(it.q || (it.meme && it.meme.query) || '') + (it.prefer_ai ? ':ai' : ''); const cache = aIdx();
+  if (cache[ck] && !it.refresh && (cache[ck].kind === 'meme' || fs.existsSync(path.join(DATA, 'pub', ...String(cache[ck].url || '').split('/pub/')[1]?.split('/') || ['x'])))) return { ...cache[ck], key: it.key, cached: true };
+  const tried = []; let hit = null;
+  if (kind === 'meme') { const m = memeFind(it.meme || { query: it.q }) || (it.meme && it.meme.id && memeIdx().memes.find(x => x.id === it.meme.id));
+    if (m) return { key: it.key, ok: true, kind, url: m.url, meme: m, source: 'biblioteca /data/memes' };
+    try { const e = await memeAdd({ ...(it.meme || {}), query: (it.meme && it.meme.query) || it.q }); const r = { ok: true, kind, url: e.url, meme: e, source: 'YouTube (yt-dlp, nuevo en la biblioteca)' }; return { ...r, key: it.key }; }
+    catch (e) { return { key: it.key, ok: false, kind, error: e.message.slice(0, 500) }; } }
+  const qs = [it.q, it.q_en, ...(it.alt || [])].filter(Boolean);
+  const order = kind === 'persona' ? ['wes', 'wen', 'commons', 'fandom'] : kind === 'logo' ? ['wen', 'wes', 'commons'] : kind === 'obra' ? ['fandom', 'wes', 'wen', 'commons'] : ['commons', 'fandom', 'wen'];
+  if (!it.prefer_ai) for (const how of order) { for (const q of qs) { try { tried.push(how + ':' + q);
+      const c = how === 'wes' ? await wikiImg(q, 'es', kind) : how === 'wen' ? await wikiImg(q, 'en', kind) : how === 'commons' ? await commonsImg(kind === 'logo' ? q + ' logo' : q) : await fandomImg(q, it.game || game);
+      if (c) { const h = await hostImage(c.src, nrm(q).replace(/ /g, '_').slice(0, 40) || 'asset'); hit = { ...c, ...h }; break; } } catch (e) { tried.push('  ✗ ' + e.message.slice(0, 100)); } } if (hit) break; }
+  if (!hit && (it.ai_prompt || it.prefer_ai) && kind !== 'persona') { for (const seed of [7, 21]) { try { const c = await aiImg(it.ai_prompt || it.q, seed); const h = await hostImage(c.src, 'ia_' + (nrm(it.q).replace(/ /g, '_').slice(0, 30) || 'img')); hit = { ...c, ...h }; break; } catch (e) { tried.push('ia ✗ ' + e.message.slice(0, 100)); } } }
+  if (!hit) return { key: it.key, ok: false, kind, tried: tried.slice(0, 14) };
+  const r = { ok: true, kind, url: hit.url, w: hit.w, h: hit.h, source: hit.source, title: hit.title, page: hit.page || null, license: hit.license || null, author: hit.author || null, ai: !!hit.ai, at: new Date().toISOString() };
+  const c2 = aIdx(); c2[ck] = r; fs.writeFileSync(aIdxF, JSON.stringify(c2)); return { ...r, key: it.key };
+}
+// ---- encuadres de fuente (v5): reel (foto con fondo desenfocado + zoom lento), crt (logo/imagen en una TV CRT), meme (clip con marco)
+function frameFilter(fr, dur) {
+  const zoom = (k) => `scale=w='trunc(${W}*(1+${k}*t/${dur.toFixed(2)})/2)*2':h=-2:eval=frame,crop=${W}:${H},setsar=1`;
+  if (fr === 'reel') return `split[a][b];[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=28:2,eq=brightness=-0.22:saturation=0.8[bg];[b]scale=${Math.round(W * 0.84)}:${Math.round(H * 0.84)}:force_original_aspect_ratio=decrease,pad=iw+14:ih+14:7:7:color=0x0B0B0B[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,${zoom(0.09)}`;
+  if (fr === 'meme') return `split[a][b];[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=30:2,eq=brightness=-0.3[bg];[b]scale=${Math.round(W * 0.8)}:${Math.round(H * 0.8)}:force_original_aspect_ratio=decrease,pad=iw+20:ih+20:10:10:color=0xFFD600[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,${zoom(0.12)}`;
+  if (fr === 'crt') return `scale=1000:700:force_original_aspect_ratio=decrease,pad=1180:860:(ow-iw)/2:(oh-ih)/2:color=0x05070a,drawgrid=w=iw:h=4:t=1:color=black@0.45,lenscorrection=k1=-0.10:k2=-0.03,eq=brightness='0.04*sin(t*31)':contrast=1.15:saturation=1.2:eval=frame,gblur=sigma=0.8,pad=1280:950:50:45:color=0x1b1814,drawbox=x=0:y=0:w=iw:h=ih:color=0x2a241d:t=40,drawbox=x=36:y=32:w=1208:h=886:color=0x0d0b09:t=14,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2+20:color=0x0e0c0b,vignette=PI/3.2,noise=alls=6:allf=t,${zoom(0.16)}`;
+  return null;
+}
+// ---- zoom 3D a la pantalla (v5): el gameplay arranca dentro de una TV CRT en un cuarto y la cámara entra hasta que la pantalla llena el cuadro (o al revés)
+// Fondo y marco (PNG con la pantalla transparente) en library.json "crt3d": {room, bezel, screen:{x,y,w,h}} (1920x1080)
+function crt3dFilter(c, dur, roomF, bezelF) {
+  const S = c.screen || { x: 640, y: 300, w: 640, h: 360 }; const Z = W / S.w; const zd = Math.min(Math.max(1.2, +c.zoom_dur || 2.2), dur - 0.1);
+  const hold = Math.max(0, +c.hold || 0.6); const out = c.type === 'out';
+  // p: 0 = cuarto entero, 1 = pantalla llena. Entrada: hold, luego easeInOut en zd s. Salida: al revés al final de la toma.
+  const tl = out ? `(${dur.toFixed(2)}-t-${hold})` : `(t-${hold})`;
+  const pm = Math.min(1, Math.max(0.1, +c.pmax || 1)); const p = `(${pm}*(0.5-0.5*cos(PI*min(1,max(0,${tl}/${zd.toFixed(2)})))))`;
+  const z = `(1+${(Z - 1).toFixed(4)}*${p}*${p})`; // zoom geométrico (aceleración tipo cámara)
+  const cx = `(${W / 2}+${(S.x + S.w / 2 - W / 2).toFixed(1)}*${p})`, cy = `(${H / 2}+${(S.y + S.h / 2 - H / 2).toFixed(1)}*${p})`;
+  const X = `max(0,min(${W}*${z}-${W},${cx}*${z}-${W / 2}))`, Y = `max(0,min(${H}*${z}-${H},${cy}*${z}-${H / 2}))`;
+  const sc = (lbl, src) => `${src}scale=w='trunc(${W}*${z}/2)*2':h='trunc(${H}*${z}/2)*2':eval=frame,crop=${W}:${H}:x='${X}':y='${Y}'${lbl}`;
+  const g = (c.fit ? `scale=${Math.round(S.w * 2 * 0.86)}:${Math.round(S.h * 2 * 0.86)}:force_original_aspect_ratio=decrease,pad=${S.w * 2}:${S.h * 2}:(ow-iw)/2:(oh-ih)/2:color=${c.bg || '0x05070a'},` : '') + (c.scan ? `scale=${S.w * 2}:${S.h * 2},drawgrid=w=iw:h=5:t=2:color=black@0.35,eq=brightness='0.03*sin(t*29)':eval=frame,` : '') + `scale=w='trunc(${S.w}*${z}/2)*2+2':h='trunc(${S.h}*${z}/2)*2+2':eval=frame`;
+  return `${g},setsar=1[g];movie='${roomF}',loop=-1:1:0,fps=${FPS},setpts=N/${FPS}/TB,${sc('[bg]', '')};movie='${bezelF}',loop=-1:1:0,fps=${FPS},setpts=N/${FPS}/TB,format=rgba,${sc('[bz]', '')};[bg][g]overlay=x='${S.x}*${z}-(${X})':y='${S.y}*${z}-(${Y})':eval=frame:shortest=0[m];[m][bz]overlay=0:0:eval=frame${pm < 1 ? '' : `:enable='${out ? `gt(t,${(dur - hold - zd + 0.04).toFixed(2)})` : `lt(t,${(hold + zd - 0.04).toFixed(2)})`}'`},format=yuv420p,setsar=1`;
+}
+
 const prefetches = new Map();
 async function inspectOne(url) {
   try {
@@ -444,6 +564,7 @@ http.createServer(async (req, res) => {
       const f = path.join(DATA, 'pub', pm[1], pm[2]); if (!fs.existsSync(f)) return send(res, 404, { error: 'not found' });
       return serveFile(req, res, f);
     }
+    if ((req.method === 'GET' || req.method === 'HEAD') && (pm = u.pathname.match(/^\/(memes|lib)\/([\w.\-]+\.(?:mp4|jpg|png|json))$/))) { const f = path.join(pm[1] === 'memes' ? MEMES : path.join(DATA, 'lib'), pm[2]); if (!fs.existsSync(f)) return send(res, 404, { error: 'not found' }); return serveFile(req, res, f); }
     if (process.env.API_KEY && req.headers['x-api-key'] !== process.env.API_KEY && u.searchParams.get('k') !== process.env.API_KEY) return send(res, 401, { error: 'unauthorized' });
     if ((req.method === 'POST' || req.method === 'PUT') && u.pathname === '/upload') {
       // v3: hosting propio (reemplaza fal storage). Body binario -> URL pública /pub/<id>/<name>
@@ -479,6 +600,24 @@ http.createServer(async (req, res) => {
     if ((pm = u.pathname.match(/^\/refs\/([\w\-]+)$/))) { const f = path.join(RDIR, pid(pm[1]) + '.json');
       if (req.method === 'GET') return fs.existsSync(f) ? send(res, 200, JSON.parse(fs.readFileSync(f, 'utf8'))) : send(res, 404, { error: 'not found' });
       if (req.method === 'PUT') { const b = await body(req); const c = Object.assign(fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {}, b, { key: pid(pm[1]), updated: new Date().toISOString() }); fs.writeFileSync(f, JSON.stringify(c)); return send(res, 200, { ok: true }); } }
+    // v5: biblioteca de memes y assets gratis
+    if (req.method === 'GET' && u.pathname === '/memes') return send(res, 200, memeIdx());
+    if (req.method === 'POST' && u.pathname === '/memes') { const b = await body(req); try { return send(res, 200, { ok: true, meme: await memeAdd(b) }); } catch (e) { return send(res, 200, { ok: false, error: e.message.slice(0, 2500) }); } }
+    if (req.method === 'PATCH' && (pm = u.pathname.match(/^\/memes\/([\w\-]+)$/))) { const b = await body(req); const ix = memeIdx(); const m = ix.memes.find(x => x.id === pm[1]); if (!m) return send(res, 404, { error: 'not found' }); Object.assign(m, b, { id: m.id, file: m.file, url: m.url }); memeSave(ix); return send(res, 200, { ok: true, meme: m }); }
+    if (req.method === 'DELETE' && (pm = u.pathname.match(/^\/memes\/([\w\-]+)$/))) { const ix = memeIdx(); ix.memes = ix.memes.filter(x => x.id !== pm[1]); memeSave(ix); for (const e of ['.mp4', '.jpg']) await fsp.unlink(path.join(MEMES, pm[1] + e)).catch(() => {}); return send(res, 200, { ok: true }); }
+    if (req.method === 'POST' && u.pathname === '/assets/find') { const b = await body(req); const out = []; for (const it of (b.items || []).slice(0, 40)) { try { out.push(await assetFind(it, b.game)); } catch (e) { out.push({ key: it.key, ok: false, error: e.message.slice(0, 300) }); } } return send(res, 200, { results: out }); }
+    if (req.method === 'PUT' && (pm = u.pathname.match(/^\/lib\/([\w.\-]+\.(?:png|jpg|mp4|json))$/))) { await saveBody(req, path.join(DATA, 'lib', pm[1])); return send(res, 200, { ok: true, url: `${PUBLIC}/lib/${pm[1]}` }); }
+    if (req.method === 'POST' && u.pathname === '/ytdlp') {
+      const b = await body(req); const name = pid(b.name || 'ref_' + crypto.randomBytes(3).toString('hex')); const dir = path.join(DATA, 'cache', 'ytd_' + name); fs.mkdirSync(dir, { recursive: true });
+      try { const o = await runOut('yt-dlp', [...ytArgs(), '--no-playlist', '--no-progress', '-f', b.format || 'bv*[height<=360]+ba/b[height<=360]/b', '--merge-output-format', 'mp4', ...(b.sections ? ['--download-sections', b.sections] : []), '--print', 'after_move:%(filepath)s', '-o', path.join(dir, 'v.%(ext)s'), b.url], 900000);
+        const f = o.trim().split('\n').pop(); const pa = await probeAll(f); const frames = [];
+        if (b.times && b.times.length) { const p = pubSave(name + '.txt'); const d0 = path.dirname(p.file); fs.writeFileSync(path.join(d0, '.keep'), '');
+          for (const t of b.times.slice(0, 150)) { const fn = `${name}_${String(Math.round(t * 10)).padStart(5, '0')}.jpg`; await run('ffmpeg', ['-y', '-v', 'error', '-ss', String(t), '-i', f, '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '4', path.join(d0, fn)]).catch(() => {}); if (fs.existsSync(path.join(d0, fn))) frames.push({ t, url: p.url.replace(/[^/]+$/, fn) }); } }
+        return send(res, 200, { ok: true, file: f, ...pa, frames }); } catch (e) { return send(res, 200, { ok: false, error: e.message.slice(0, 3000) }); } }
+    if (req.method === 'POST' && u.pathname === '/frames') { // {url, times[]} -> cuadros jpg públicos (para verificar renders)
+      const b = await body(req); const jj = b.job && jobs.get(b.job); const f = jj && jj.file ? jj.file : await download(b.url); const p = pubSave('frames.txt'); const d0 = path.dirname(p.file); const frames = [];
+      for (const t of (b.times || []).slice(0, 150)) { const fn = `f_${String(Math.round(t * 10)).padStart(6, '0')}.jpg`; await run('ffmpeg', ['-y', '-v', 'error', '-ss', String(t), '-i', f, '-frames:v', '1', '-vf', `scale=${+b.w || 640}:-2`, '-q:v', '4', path.join(d0, fn)]).catch(() => {}); if (fs.existsSync(path.join(d0, fn))) frames.push({ t, url: p.url.replace(/[^/]+$/, fn) }); }
+      return send(res, 200, { frames }); }
     if (req.method === 'GET' && u.pathname === '/projects') return send(res, 200, { projects: listProjects() });
     if (req.method === 'GET' && u.pathname === '/projects/resolve') { const r = resolveProject(u.searchParams.get('q')); return r ? send(res, 200, loadProject(r.id)) : send(res, 404, { error: 'proyecto no encontrado', projects: listProjects().slice(0, 15) }); }
     if ((pm = u.pathname.match(/^\/projects\/([\w\-]+)$/))) {
@@ -486,7 +625,7 @@ http.createServer(async (req, res) => {
       if (req.method === 'PUT') { const b = await body(req); const p = Object.assign(loadProject(pm[1]) || { id: pid(pm[1]), created: new Date().toISOString(), versions: [] }, b, { id: pid(pm[1]) }); return send(res, 200, { ok: true, id: writeProject(p).id }); }
     }
     if (req.method === 'GET' && u.pathname === '/stats') { let disk = null; try { const f = fs.statfsSync(DATA); disk = { free_gb: +(f.bavail * f.bsize / 1e9).toFixed(1), total_gb: +(f.blocks * f.bsize / 1e9).toFixed(1) }; } catch (e) {} return send(res, 200, { disk, projects: listProjects().length, cache_files: fs.readdirSync(path.join(DATA, 'cache')).length, scene_files: fs.readdirSync(path.join(DATA, 'scenes')).length }); }
-    if (req.method === 'GET' && u.pathname === '/features') return send(res, 200, { v: 4, projects: 'GET /projects, GET /projects/resolve?q=, GET|PUT /projects/:id, spec.project{id,notes,data} guarda versión al terminar', fx: 'scene.fx[{type:punch|shake|glitch|flash|lower|title|stamp, at, dur, text, sub, z}]', voice: 'spec.voice{enhance,cut,pad_start,pad_end,chain,loudnorm}', endpoints: ['PUT|POST /upload?name=', 'POST /frame?name=&t=', 'POST /publish/:job', 'GET /pub/:id/:name (público)'], scene: ['trans_in:flash|dip|glitch|whip|leak|burn|zoom', 'text_color'], spec: ['subtitles{srt,burn,style}', 'ducking{threshold,ratio,attack,release}'] });
+    if (req.method === 'GET' && u.pathname === '/features') return send(res, 200, { v: 5, v5: 'GET|POST /memes (biblioteca /data/memes), POST /assets/find, POST /ytdlp, PUT /lib/:file, source.frame reel|crt|meme, scene.crt3d{type:in|out,zoom_dur,hold}, spec.mute[{start,end}]', projects: 'GET /projects, GET /projects/resolve?q=, GET|PUT /projects/:id, spec.project{id,notes,data} guarda versión al terminar', fx: 'scene.fx[{type:punch|shake|glitch|flash|lower|title|stamp, at, dur, text, sub, z}]', voice: 'spec.voice{enhance,cut,pad_start,pad_end,chain,loudnorm}', endpoints: ['PUT|POST /upload?name=', 'POST /frame?name=&t=', 'POST /publish/:job', 'GET /pub/:id/:name (público)'], scene: ['trans_in:flash|dip|glitch|whip|leak|burn|zoom', 'text_color'], spec: ['subtitles{srt,burn,style}', 'ducking{threshold,ratio,attack,release}'] });
     if (req.method === 'GET' && u.pathname === '/library') return send(res, 200, { license: LIB.license, sfx: Object.fromEntries(Object.entries(LIB.sfx).map(([k, v]) => [k, v.desc])), music: Object.fromEntries(Object.entries(LIB.music).map(([k, v]) => [k, v.desc])) });
     if (req.method === 'POST' && u.pathname === '/prep-audio') {
       // returns a small mono mp3 of the narration for transcription (Whisper limit 25 MB)

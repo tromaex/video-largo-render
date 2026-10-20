@@ -155,5 +155,16 @@
    "url": "https://assets.mixkit.co/music/76/76.mp3",
    "desc": "épico, cierre"
   }
+ },
+ "crt3d": {
+  "room": "https://video.licjuanpablo.com.ar/lib/crt_room.png",
+  "bezel": "https://video.licjuanpablo.com.ar/lib/crt_bezel.png",
+  "screen": {
+   "x": 672,
+   "y": 318,
+   "w": 576,
+   "h": 324
+  },
+  "desc": "cuarto con TV CRT (pantalla 16:9) para el zoom 3D a la pantalla"
  }
 }
