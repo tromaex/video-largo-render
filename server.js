@@ -618,6 +618,7 @@ http.createServer(async (req, res) => {
       const b = await body(req); const jj = b.job && jobs.get(b.job); const f = jj && jj.file ? jj.file : await download(b.url); const p = pubSave('frames.txt'); const d0 = path.dirname(p.file); const frames = [];
       for (const t of (b.times || []).slice(0, 150)) { const fn = `f_${String(Math.round(t * 10)).padStart(6, '0')}.jpg`; await run('ffmpeg', ['-y', '-v', 'error', '-ss', String(t), '-i', f, '-frames:v', '1', '-vf', `scale=${+b.w || 640}:-2`, '-q:v', '4', path.join(d0, fn)]).catch(() => {}); if (fs.existsSync(path.join(d0, fn))) frames.push({ t, url: p.url.replace(/[^/]+$/, fn) }); }
       return send(res, 200, { frames }); }
+    if (req.method === 'PUT' && u.pathname === '/secret/yt_cookies') { await saveBody(req, path.join(DATA, 'yt_cookies.txt')); fs.chmodSync(path.join(DATA, 'yt_cookies.txt'), 0o600); return send(res, 200, { ok: true, bytes: fs.statSync(path.join(DATA, 'yt_cookies.txt')).size }); }
     if (req.method === 'GET' && u.pathname === '/projects') return send(res, 200, { projects: listProjects() });
     if (req.method === 'GET' && u.pathname === '/projects/resolve') { const r = resolveProject(u.searchParams.get('q')); return r ? send(res, 200, loadProject(r.id)) : send(res, 404, { error: 'proyecto no encontrado', projects: listProjects().slice(0, 15) }); }
     if ((pm = u.pathname.match(/^\/projects\/([\w\-]+)$/))) {
