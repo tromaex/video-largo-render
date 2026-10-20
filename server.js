@@ -13,7 +13,8 @@ const LIB = require('./library.json');
 const W = 1920, H = 1080, FPS = 30;
 const FONTDIR = ['/app/fonts', '/usr/share/fonts/truetype/anton'].find(d => fs.existsSync(path.join(d, 'Anton-Regular.ttf')));
 const FONT = FONTDIR ? path.join(FONTDIR, 'Anton-Regular.ttf') : '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
-for (const d of ['cache', 'jobs', 'lib']) fs.mkdirSync(path.join(DATA, d), { recursive: true });
+const PUBLIC = (process.env.PUBLIC_URL || 'https://video.licjuanpablo.com.ar').replace(/\/$/, '');
+for (const d of ['cache', 'jobs', 'lib', 'pub']) fs.mkdirSync(path.join(DATA, d), { recursive: true });
 
 const jobs = new Map();
 const queue = [];
@@ -28,6 +29,59 @@ function run(cmd, args, job) {
     p.stderr.on('data', d => { err += d; if (err.length > 20000) err = err.slice(-10000); });
     p.on('close', c => c === 0 ? res() : rej(new Error(`${cmd} exit ${c}: ${err.slice(-1500)}`)));
   });
+}
+function runErr(cmd, args) {
+  return new Promise((res, rej) => {
+    const p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = ''; p.stderr.on('data', d => { err += d; if (err.length > 200000) err = err.slice(-100000); });
+    p.on('close', c => c === 0 ? res(err) : rej(new Error(`${cmd} exit ${c}: ${err.slice(-1500)}`)));
+  });
+}
+// v3: tratamiento de voz tipo Audacity, gratis con ffmpeg (highpass + afftdn + de-esser + compresor + loudnorm 2 pasadas)
+const VOICE_CHAIN = 'highpass=f=80,afftdn=nr=11:nf=-25:tn=1,deesser=i=0.25:m=0.5:f=0.5:s=o,acompressor=threshold=-18dB:ratio=3:attack=15:release=200:knee=4';
+async function prepVoice(job, src, v, D, dir) {
+  const out = path.join(dir, 'voice.wav');
+  const cut = +v.cut > 0 ? +v.cut : 0;
+  const inA = ['-y', '-v', 'info', '-nostats', ...(cut ? ['-t', String(cut)] : []), '-i', src, '-vn'];
+  const pad = Math.max(0, +v.pad_start || 0);
+  const tail = (cut ? `,afade=t=out:st=${Math.max(0, cut - 0.4).toFixed(2)}:d=0.4` : '') + `,adelay=${Math.round(pad * 1000)}:all=1,apad=whole_dur=${(D || 0).toFixed(3)}`;
+  if (v.enhance !== false) {
+    try {
+      const L = v.loudnorm || { I: -16, TP: -1.5, LRA: 11 };
+      const chain = (v.chain || VOICE_CHAIN);
+      const e1 = await runErr('ffmpeg', [...inA, '-af', `aresample=48000,${chain},loudnorm=I=${L.I}:TP=${L.TP}:LRA=${L.LRA}:print_format=json`, '-f', 'null', '-']);
+      const js = JSON.parse(e1.slice(e1.lastIndexOf('{'), e1.lastIndexOf('}') + 1));
+      const ln = `loudnorm=I=${L.I}:TP=${L.TP}:LRA=${L.LRA}:measured_I=${js.input_i}:measured_TP=${js.input_tp}:measured_LRA=${js.input_lra}:measured_thresh=${js.input_thresh}:offset=${js.target_offset}:linear=true`;
+      await run('ffmpeg', [...inA, '-af', `aresample=48000,${chain},${ln},aresample=48000${tail}`, '-c:a', 'pcm_s16le', out], job);
+      job.voice = { enhanced: true, input_i: +js.input_i, input_tp: +js.input_tp, input_lra: +js.input_lra };
+      log(job, `voice enhanced (in ${js.input_i} LUFS, TP ${js.input_tp}) -> ${L.I} LUFS`);
+      return out;
+    } catch (e) { log(job, 'voice enhance failed, using original: ' + e.message.slice(0, 300)); }
+  }
+  await run('ffmpeg', [...inA, '-af', `aresample=48000${tail}`, '-c:a', 'pcm_s16le', out], job);
+  job.voice = { enhanced: false };
+  return out;
+}
+function pubSave(name) {
+  const id = crypto.randomBytes(9).toString('hex');
+  const clean = String(name || 'file.bin').replace(/[^\w.\-]+/g, '_').slice(-80) || 'file.bin';
+  fs.mkdirSync(path.join(DATA, 'pub', id), { recursive: true });
+  return { id, name: clean, file: path.join(DATA, 'pub', id, clean), url: `${PUBLIC}/pub/${id}/${clean}` };
+}
+function saveBody(req, file) { return new Promise((res, rej) => { const w = fs.createWriteStream(file); req.pipe(w); w.on('finish', res); w.on('error', rej); req.on('error', rej); }); }
+const MIME = { mp4: 'video/mp4', mp3: 'audio/mpeg', wav: 'audio/wav', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', srt: 'text/plain; charset=utf-8', json: 'application/json' };
+function serveFile(req, res, file) {
+  const st = fs.statSync(file); const type = MIME[(file.split('.').pop() || '').toLowerCase()] || 'application/octet-stream';
+  const r = String(req.headers.range || '').match(/bytes=(\d*)-(\d*)/);
+  if (r && (r[1] || r[2])) {
+    let a = r[1] ? +r[1] : st.size - +r[2], b = r[1] && r[2] ? +r[2] : st.size - 1; b = Math.min(b, st.size - 1);
+    if (a > b || a < 0) { res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }); return res.end(); }
+    res.writeHead(206, { 'Content-Type': type, 'Content-Length': b - a + 1, 'Content-Range': `bytes ${a}-${b}/${st.size}`, 'Accept-Ranges': 'bytes' });
+    return fs.createReadStream(file, { start: a, end: b }).pipe(res);
+  }
+  res.writeHead(200, { 'Content-Type': type, 'Content-Length': st.size, 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=86400' });
+  if (req.method === 'HEAD') return res.end();
+  return fs.createReadStream(file).pipe(res);
 }
 function probeDur(file) {
   return new Promise((res, rej) => {
@@ -53,6 +107,7 @@ async function download(url, job) {
     if (!fs.existsSync(f)) { const alt = fs.readdirSync(path.join(DATA, 'cache')).find(n => n.startsWith(key + '.')); if (!alt) throw new Error('yt-dlp: no output'); await fsp.rename(path.join(DATA, 'cache', alt), f); }
     return f;
   }
+  if (url.startsWith(PUBLIC + '/pub/')) { const p = path.join(DATA, 'pub', ...url.slice(PUBLIC.length + 5).split('?')[0].split('/').map(decodeURIComponent)); if (!p.includes('..') && fs.existsSync(p)) return p; }
   url = normUrl(url);
   const key = crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
   const ext = (url.split('?')[0].match(/\.(mp3|mp4|m4a|wav|webm|mov|mkv|png|jpg|jpeg)$/i) || [, 'bin'])[1];
@@ -127,8 +182,15 @@ async function processJob(job) {
   const dir = path.join(DATA, 'jobs', job.id);
   await fsp.mkdir(dir, { recursive: true });
   job.status = 'downloading';
-  const narr = await download(spec.audio_url, job);
-  const D = spec.duration || await probeDur(narr);
+  const narrSrc = await download(spec.audio_url, job);
+  let narr = narrSrc;
+  let D = spec.duration;
+  if (spec.voice) {
+    if (!D) D = (+spec.voice.cut > 0 ? +spec.voice.cut : await probeDur(narrSrc)) + (+spec.voice.pad_start || 0) + (+spec.voice.pad_end || 0);
+    job.status = 'voice';
+    narr = await prepVoice(job, narrSrc, spec.voice, D, dir);
+  }
+  if (!D) D = await probeDur(narr);
   job.duration = D;
   log(job, `narration ${D.toFixed(1)}s, ${spec.scenes.length} scenes`);
   // fill gaps so scenes cover [0,D]
@@ -206,6 +268,7 @@ async function processJob(job) {
     '-c:v', 'libx264', '-preset', spec.preset || 'veryfast', '-crf', String(spec.crf || 22), '-maxrate', '10M', '-bufsize', '20M', '-threads', THREADS, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', out], job);
   for (const f of list) await fsp.unlink(f).catch(() => {});
   await fsp.unlink(video).catch(() => {});
+  if (narr !== narrSrc) await fsp.unlink(narr).catch(() => {});
   job.file = out; job.size = fs.statSync(out).size;
   log(job, `rendered ${(job.size / 1e6).toFixed(1)} MB`);
 
@@ -241,6 +304,15 @@ async function cleanup() {
       if (st && st.mtimeMs < cutoff) await fsp.rm(p, { recursive: true, force: true });
     }
   }
+  // pub: archivos grandes (mp4 de preview/pack) 10 días; miniaturas e imágenes 120 días (A/B diario las necesita)
+  for (const n of await fsp.readdir(path.join(DATA, 'pub')).catch(() => [])) {
+    const d = path.join(DATA, 'pub', n);
+    for (const f of await fsp.readdir(d).catch(() => [])) {
+      const st = await fsp.stat(path.join(d, f)).catch(() => null); if (!st) continue;
+      const age = Date.now() - st.mtimeMs;
+      if (age > 120 * 864e5 || (st.size > 20e6 && age > 10 * 864e5)) await fsp.rm(d, { recursive: true, force: true });
+    }
+  }
 }
 setInterval(cleanup, 6 * 3600e3);
 
@@ -260,8 +332,36 @@ http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, 'http://x');
     if (req.method === 'GET' && u.pathname === '/') return send(res, 200, { ok: true, busy, queued: queue.length, jobs: [...jobs.values()].slice(-10).map(j => ({ id: j.id, status: j.status, done: j.done, total: j.total })) });
+    let pm;
+    if ((req.method === 'GET' || req.method === 'HEAD') && (pm = u.pathname.match(/^\/pub\/([a-f0-9]{18})\/([\w.\-]+)$/))) {
+      const f = path.join(DATA, 'pub', pm[1], pm[2]); if (!fs.existsSync(f)) return send(res, 404, { error: 'not found' });
+      return serveFile(req, res, f);
+    }
     if (process.env.API_KEY && req.headers['x-api-key'] !== process.env.API_KEY && u.searchParams.get('k') !== process.env.API_KEY) return send(res, 401, { error: 'unauthorized' });
-    if (req.method === 'GET' && u.pathname === '/features') return send(res, 200, { v: 2, scene: ['trans_in:flash|dip|glitch|whip|leak|burn|zoom', 'text_color'], spec: ['subtitles{srt,burn,style}', 'ducking{threshold,ratio,attack,release}'] });
+    if ((req.method === 'POST' || req.method === 'PUT') && u.pathname === '/upload') {
+      // v3: hosting propio (reemplaza fal storage). Body binario -> URL pública /pub/<id>/<name>
+      const p = pubSave(u.searchParams.get('name') || 'file.bin'); await saveBody(req, p.file);
+      const size = fs.statSync(p.file).size; if (!size) { fs.rmSync(path.dirname(p.file), { recursive: true, force: true }); return send(res, 400, { error: 'empty body' }); }
+      return send(res, 200, { url: p.url, file_url: p.url, size });
+    }
+    if (req.method === 'POST' && u.pathname === '/frame') {
+      // v3: primer cuadro (o ?t=s) de un video binario o {url} -> JPG público (reemplaza fal extract-frame)
+      const p = pubSave((u.searchParams.get('name') || 'frame.jpg').replace(/\.\w+$/, '') + '.jpg');
+      let src;
+      if (/json/.test(req.headers['content-type'] || '')) { const b = await body(req); src = await download(b.url || b.video_url); }
+      else { src = path.join(DATA, 'cache', 'frm_' + crypto.randomBytes(6).toString('hex') + '.mp4'); await saveBody(req, src); }
+      try { await run('ffmpeg', ['-y', '-v', 'error', '-ss', String(+u.searchParams.get('t') || 0), '-i', src, '-frames:v', '1', '-q:v', '2', p.file]); }
+      finally { if (src.includes('frm_')) await fsp.unlink(src).catch(() => {}); }
+      return send(res, 200, { url: p.url, images: [{ url: p.url }] });
+    }
+    if (req.method === 'POST' && (pm = u.pathname.match(/^\/publish\/(\w+)$/))) {
+      // v3: link público del mp4 de un job (preview por Telegram, reemplaza la subida a fal)
+      const j = jobs.get(pm[1]); if (!j || !j.file || !fs.existsSync(j.file)) return send(res, 404, { error: 'not ready' });
+      const p = pubSave((u.searchParams.get('name') || `video-${j.id}`).replace(/\.\w+$/, '') + '.mp4');
+      try { fs.linkSync(j.file, p.file); } catch (e) { await fsp.copyFile(j.file, p.file); }
+      return send(res, 200, { url: p.url, file_url: p.url, size: fs.statSync(p.file).size });
+    }
+    if (req.method === 'GET' && u.pathname === '/features') return send(res, 200, { v: 3, voice: 'spec.voice{enhance,cut,pad_start,pad_end,chain,loudnorm}', endpoints: ['PUT|POST /upload?name=', 'POST /frame?name=&t=', 'POST /publish/:job', 'GET /pub/:id/:name (público)'], scene: ['trans_in:flash|dip|glitch|whip|leak|burn|zoom', 'text_color'], spec: ['subtitles{srt,burn,style}', 'ducking{threshold,ratio,attack,release}'] });
     if (req.method === 'GET' && u.pathname === '/library') return send(res, 200, { license: LIB.license, sfx: Object.fromEntries(Object.entries(LIB.sfx).map(([k, v]) => [k, v.desc])), music: Object.fromEntries(Object.entries(LIB.music).map(([k, v]) => [k, v.desc])) });
     if (req.method === 'POST' && u.pathname === '/prep-audio') {
       // returns a small mono mp3 of the narration for transcription (Whisper limit 25 MB)
