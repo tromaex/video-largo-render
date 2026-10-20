@@ -14,7 +14,7 @@ const W = 1920, H = 1080, FPS = 30;
 const FONTDIR = ['/app/fonts', '/usr/share/fonts/truetype/anton'].find(d => fs.existsSync(path.join(d, 'Anton-Regular.ttf')));
 const FONT = FONTDIR ? path.join(FONTDIR, 'Anton-Regular.ttf') : '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
 const PUBLIC = (process.env.PUBLIC_URL || 'https://video.licjuanpablo.com.ar').replace(/\/$/, '');
-for (const d of ['cache', 'jobs', 'lib', 'pub']) fs.mkdirSync(path.join(DATA, d), { recursive: true });
+for (const d of ['cache', 'jobs', 'lib', 'pub', 'projects', 'scenes']) fs.mkdirSync(path.join(DATA, d), { recursive: true });
 
 const jobs = new Map();
 const queue = [];
@@ -95,7 +95,8 @@ function normUrl(u) {
   return u;
 }
 function isYT(u) { return /(youtube\.com\/(watch|shorts|live)|youtu\.be\/)/i.test(u); }
-async function download(url, job) {
+async function download(url, job) { const f0 = await download0(url, job); if (job && job.assets) job.assets.add(f0); return f0; }
+async function download0(url, job) {
   if (isYT(url)) {
     const key = 'yt_' + crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
     const f = path.join(DATA, 'cache', key + '.mp4');
@@ -122,19 +123,51 @@ function libUrl(group, key) { const e = LIB[group][key]; if (!e) throw new Error
 
 function esc(t) { return String(t).replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\u2019").replace(/%/g, '\\%'); }
 
-// v2: transición de entrada por escena (los primeros ~0.3 s), sin tocar el resto de la toma
+// v4: transiciones de entrada más visibles y largas (~0.5 s). Todo ffmpeg (gratis).
+const TRD = 0.55;
 function transFilter(tr) {
   const e = (d) => `enable='lt(t,${d})'`;
   switch (tr) {
-    case 'flash': return `fade=t=in:st=0:d=0.22:color=white`;
-    case 'dip': return `fade=t=in:st=0:d=0.3:color=black`;
-    case 'glitch': return `rgbashift=rh=-14:bh=14:gv=4:${e(0.3)},noise=alls=45:allf=t:${e(0.3)}`;
-    case 'whip': return `avgblur=sizeX=70:sizeY=1:${e(0.16)},avgblur=sizeX=30:sizeY=1:${e(0.26)}`;
-    case 'leak': return `colorchannelmixer=rr=1.35:gg=1.12:bb=0.78:${e(0.35)},eq=brightness=0.22:saturation=1.3:${e(0.25)}`;
-    case 'burn': return `eq=brightness=0.45:contrast=1.4:${e(0.12)},colorchannelmixer=rr=1.5:gg=1.0:bb=0.5:${e(0.3)}`;
-    case 'zoom': return `scale=w='iw*(1+0.25*max(0,1-t/0.3))':h='ih*(1+0.25*max(0,1-t/0.3))':eval=frame,crop=${W}:${H}`;
+    case 'flash': return `eq=brightness='0.85*max(0,1-t/0.38)':contrast='1+0.4*max(0,1-t/0.38)':eval=frame,scale=w='trunc(iw*(1+0.08*max(0,1-t/0.4))/2)*2':h=-2:eval=frame,crop=${W}:${H}`;
+    case 'dip': return `fade=t=in:st=0:d=0.45:color=black`;
+    case 'glitch': return `rgbashift=rh=-34:bh=34:gv=8:rv=-6:${e(0.5)},noise=alls=75:allf=t:${e(0.5)},eq=contrast=1.6:saturation=1.8:${e(0.22)},hue=h=90:${e(0.08)},crop=${W}:${H - 24}:0:'if(lt(t,0.5),12+12*sin(t*157),12)',scale=${W}:${H}`;
+    case 'whip': return `scale=${Math.round(W * 1.35)}:-2,crop=${W}:${H}:x='(iw-ow)/2+(iw-ow)/2*max(0,1-t/0.32)':y='(ih-oh)/2',avgblur=sizeX=110:sizeY=1:${e(0.12)},avgblur=sizeX=55:sizeY=1:${e(0.24)},avgblur=sizeX=20:sizeY=1:${e(0.36)}`;
+    case 'leak': return `eq=brightness='0.42*max(0,1-t/0.6)':saturation='1+0.6*max(0,1-t/0.6)':eval=frame,colorbalance=rs=0.45:gs=0.12:bs=-0.4:rm=0.3:bm=-0.25:${e(0.6)},gblur=sigma=14:${e(0.18)}`;
+    case 'burn': return `eq=brightness='0.7*max(0,1-t/0.5)':contrast='1+0.8*max(0,1-t/0.5)':eval=frame,colorbalance=rs=0.6:gs=0.15:bs=-0.6:rh=0.4:bh=-0.4:${e(0.5)},noise=alls=40:allf=t:${e(0.5)},vignette=PI/3:${e(0.5)}`;
+    case 'zoom': return `scale=w='trunc(iw*(1+0.45*pow(max(0,1-t/0.5),2))/2)*2':h=-2:eval=frame,crop=${W}:${H},gblur=sigma=10:${e(0.14)}`;
     default: return '';
   }
+}
+// v4: efectos puntuales dentro de la toma (at/dur relativos al inicio de la escena)
+function fxFilter(fx, dur) {
+  const out = [];
+  for (const f of fx || []) {
+    const a = Math.max(0, +f.at || 0); if (a >= dur) continue;
+    const d = Math.max(0.1, Math.min(+f.dur || 0.6, dur - a)); const b = a + d; const en = `enable='between(t,${a.toFixed(2)},${b.toFixed(2)})'`;
+    switch (f.type) {
+      case 'punch': { const z = Math.min(0.35, +f.z || 0.2);
+        out.push(`scale=w='trunc(iw*(1+${z}*min(1,max(0,(t-${a.toFixed(2)})/0.12))*min(1,max(0,(${b.toFixed(2)}-t)/0.18)))/2)*2':h=-2:eval=frame,crop=${W}:${H}`); break; }
+      case 'shake': out.push(`scale=${W + 90}:${H + 50},crop=${W}:${H}:x='45+if(between(t,${a.toFixed(2)},${b.toFixed(2)}),30*sin(t*97)+12*sin(t*41),0)':y='25+if(between(t,${a.toFixed(2)},${b.toFixed(2)}),18*sin(t*83),0)'`); break;
+      case 'glitch': out.push(`rgbashift=rh=-26:bh=26:gv=6:${en}`, `noise=alls=65:allf=t:${en}`, `eq=contrast=1.5:saturation=1.6:enable='between(t,${a.toFixed(2)},${(a + 0.08).toFixed(2)})+between(t,${(a + 0.2).toFixed(2)},${(a + 0.27).toFixed(2)})'`); break;
+      case 'flash': out.push(`eq=brightness='0.75*max(0,1-abs(t-${a.toFixed(2)})/0.14)':eval=frame`); break;
+      case 'lower': { // rótulo inferior animado (lower-third)
+        const t1 = esc(String(f.text || '').toUpperCase().slice(0, 40)), t2 = esc(String(f.sub || '').slice(0, 60));
+        const sl = `min(1,max(0,(t-${a.toFixed(2)})/0.3))`, al = `min(1,max(0,(t-${a.toFixed(2)})/0.25))*min(1,max(0,(${b.toFixed(2)}-t)/0.3))`;
+        out.push(`drawbox=x='-760+${sl}*840':y=${H - 330}:w=12:h=${t2 ? 150 : 100}:color=0xFF2A2A@1:t=fill:${en}`);
+        out.push(`drawtext=fontfile=${FONT}:text='${t1}':fontsize=80:fontcolor=0xFFD600:alpha='${al}':box=1:boxcolor=0x0B0B0B@0.82:boxborderw=14:x='-740+${sl}*850':y=${H - 330}:${en}`);
+        if (t2) out.push(`drawtext=fontfile=${FONT}:text='${t2}':fontsize=42:fontcolor=white:alpha='${al}':box=1:boxcolor=0x0B0B0B@0.7:boxborderw=8:x='-740+${sl}*850':y=${H - 220}:${en}`);
+        break; }
+      case 'title': { const t1 = esc(String(f.text || '').toUpperCase().slice(0, 34));
+        const al = `min(1,max(0,(t-${a.toFixed(2)})/0.2))*min(1,max(0,(${b.toFixed(2)}-t)/0.3))`;
+        out.push(`drawtext=fontfile=${FONT}:text='${t1}':fontsize=110:fontcolor=0xFFD600:borderw=7:bordercolor=0x0B0B0B:alpha='${al}':x=(w-text_w)/2:y='(h-text_h)/2-60*max(0,1-(t-${a.toFixed(2)})/0.25)':${en}`); break; }
+      case 'stamp': { // reacción/meme: cartel grande que tiembla
+        const t1 = esc(String(f.text || '¿¿QUÉ??').toUpperCase().slice(0, 18)), t2 = esc(String(f.sub || '').slice(0, 40));
+        out.push(`drawtext=fontfile=${FONT}:text='${t1}':fontsize=150:fontcolor=white:box=1:boxcolor=0xFF2A2A@0.95:boxborderw=26:borderw=0:x='(w-text_w)/2+10*sin(t*60)':y='(h-text_h)/2-90+8*sin(t*47)':${en}`);
+        if (t2) out.push(`drawtext=fontfile=${FONT}:text='${t2}':fontsize=46:fontcolor=0xFFD600:box=1:boxcolor=0x0B0B0B@0.85:boxborderw=12:x=(w-text_w)/2:y=(h/2)+70:${en}`);
+        break; }
+    }
+  }
+  return out.join(',');
 }
 function effectFilter(effect, frames) {
   const base = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`;
@@ -155,10 +188,10 @@ async function renderScene(job, s, i, dir) {
   const frames = Math.round(dur * FPS);
   const out = path.join(dir, `s${String(i).padStart(4, '0')}.mp4`);
   const src = s.source || { type: 'color' };
-  let inArgs;
+  let inArgs, srcFile = null;
   if (src.type === 'color' || !src.url) inArgs = ['-f', 'lavfi', '-i', `color=c=${src.color || 'black'}:s=${W}x${H}:r=${FPS}`];
   else {
-    const f = await download(src.url, job);
+    const f = await download(src.url, job); srcFile = f;
     if (/\.(png|jpe?g)$/i.test(f)) inArgs = ['-loop', '1', '-framerate', String(FPS), '-i', f];
     else inArgs = ['-stream_loop', '-1', '-ss', String(src.offset || 0), '-i', f];
   }
@@ -169,16 +202,24 @@ async function renderScene(job, s, i, dir) {
     const size = s.text_size || (s.text_pos === 'center' ? 92 : 58);
     vf += `,drawtext=fontfile=${FONT}:text='${esc(s.text)}':fontsize=${size}:fontcolor=${s.text_color || '0xFFD600'}:borderw=5:bordercolor=0x0B0B0B@0.9:${pos}:alpha='min(1,t/0.3)'`;
   }
+  if (s.fx && s.fx.length) { const ff = fxFilter(s.fx, dur); if (ff) vf += ',' + ff; }
   if (s.trans_in) { const tf = transFilter(s.trans_in); if (tf) vf += ',' + tf; }
   if (s.fade_in) vf += `,fade=t=in:st=0:d=${Math.min(0.6, dur / 3)}`;
   if (s.fade_out) vf += `,fade=t=out:st=${Math.max(0, dur - Math.min(0.6, dur / 3))}:d=${Math.min(0.6, dur / 3)}`;
   vf += ',format=yuv420p';
+  // v4: caché de escenas (modo proyecto): una toma idéntica no se vuelve a renderizar
+  let ck = null;
+  try { const st = srcFile ? fs.statSync(srcFile) : null; ck = crypto.createHash('sha1').update(JSON.stringify({ v: 4, vf, inArgs: inArgs.map(x => x === srcFile ? 'SRC' : x), src: st ? [srcFile, st.size] : null, dur: dur.toFixed(3), frames })).digest('hex').slice(0, 24); } catch (e) {}
+  const cached = ck ? path.join(DATA, 'scenes', ck + '.mp4') : null;
+  if (cached && fs.existsSync(cached) && fs.statSync(cached).size > 0) { job.cacheHits = (job.cacheHits || 0) + 1; if (job.sceneFiles) job.sceneFiles.add(cached); const nowT = new Date(); fs.utimesSync(cached, nowT, nowT); return cached; }
   await run('ffmpeg', ['-y', '-v', 'error', ...inArgs, '-t', dur.toFixed(3), '-vf', vf, '-frames:v', String(frames), '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-r', String(FPS), '-threads', THREADS, out], job);
+  if (cached) { try { fs.renameSync(out, cached); if (job.sceneFiles) job.sceneFiles.add(cached); return cached; } catch (e) {} }
   return out;
 }
 
 async function processJob(job) {
   const spec = job.spec;
+  job.assets = new Set(); job.sceneFiles = new Set(); job.cacheHits = 0;
   const dir = path.join(DATA, 'jobs', job.id);
   await fsp.mkdir(dir, { recursive: true });
   job.status = 'downloading';
@@ -266,7 +307,7 @@ async function processJob(job) {
   const out = path.join(dir, 'final.mp4');
   await run('ffmpeg', ['-y', '-v', 'error', ...inputs, '-filter_complex', fc.join(';'), '-map', '[vout]', '-map', '[aout]', '-t', D.toFixed(3),
     '-c:v', 'libx264', '-preset', spec.preset || 'veryfast', '-crf', String(spec.crf || 22), '-maxrate', '10M', '-bufsize', '20M', '-threads', THREADS, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', out], job);
-  for (const f of list) await fsp.unlink(f).catch(() => {});
+  for (const f of list) if (!f.startsWith(path.join(DATA, 'scenes'))) await fsp.unlink(f).catch(() => {});
   await fsp.unlink(video).catch(() => {});
   if (narr !== narrSrc) await fsp.unlink(narr).catch(() => {});
   job.file = out; job.size = fs.statSync(out).size;
@@ -281,6 +322,7 @@ async function processJob(job) {
     log(job, 'uploaded ' + (job.youtube.id || ''));
   }
   job.status = 'done';
+  if (spec.project && spec.project.id) { try { saveProjectVersion(job); } catch (e) { log(job, 'project save failed: ' + e.message); } }
 }
 
 async function pump() {
@@ -294,14 +336,78 @@ async function pump() {
   }
   pump();
 }
-function pub(j) { const { spec, ...r } = j; return { ...r, meta: spec.meta || null, file_url: j.file ? `/files/${j.id}.mp4` : null }; }
+function pub(j) { const { spec, assets, sceneFiles, ...r } = j; return { ...r, project: spec.project ? { id: spec.project.id, version: j.projectVersion || null } : null, meta: spec.meta || null, file_url: j.file ? `/files/${j.id}.mp4` : null }; }
+
+// ---------- v4: referencias del juego gratis (Fandom MediaWiki API + StrategyWiki + links opcionales), cacheadas por juego en /data/refs
+const RDIR = path.join(DATA, 'refs'); fs.mkdirSync(RDIR, { recursive: true });
+const rkey = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\(.*?\)/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'juego';
+function htmlText(h) { return String(h || '').replace(/<(script|style|table class="(?:navbox|infobox)[^"]*")[\s\S]*?<\/(script|style|table)>/gi, ' ').replace(/<sup[\s\S]*?<\/sup>/gi, '').replace(/<h([1-4])[^>]*>([\s\S]*?)<\/h\1>/gi, '\n## $2\n').replace(/<li[^>]*>/gi, '\n- ').replace(/<(p|br|div|tr)[^>]*>/gi, '\n').replace(/<[^>]+>/g, '').replace(/\[edit\]|\[editar\]/gi, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim(); }
+async function getJSON(u) { const r = await fetch(u, { headers: { 'User-Agent': 'video-largo-render/4 (juanpau; refs)' }, signal: AbortSignal.timeout(25000) }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }
+async function mwPage(api, title, max) { const j = await getJSON(`${api}?action=parse&page=${encodeURIComponent(title)}&prop=text&format=json&formatversion=2&redirects=1`); return htmlText(j.parse && j.parse.text).slice(0, max || 14000); }
+async function mwSearch(api, q, n) { const j = await getJSON(`${api}?action=query&list=search&srsearch=${encodeURIComponent(q)}&format=json&srlimit=${n || 8}`); return ((j.query || {}).search || []).map(x => x.title); }
+async function gatherRefs(game, extra) {
+  const out = { game, sources: [], sections: [] }; const base = game.replace(/\(.*?\)/g, '').trim(); const franchise = base.replace(/\b(\d+|i{1,3}|iv|v)\b\s*$/i, '').trim() || base;
+  const add = (title, url, text, kind) => { if (text && text.length > 200) { out.sections.push({ title, url, kind, text }); out.sources.push({ title, url }); } };
+  // Fandom
+  const slugs = [...new Set([franchise.toLowerCase().replace(/[^a-z0-9]/g, ''), franchise.toLowerCase().replace(/[^a-z0-9]+/g, '-'), base.toLowerCase().replace(/[^a-z0-9]/g, '')])];
+  let fandom = null; for (const sl of slugs) { try { const j = await getJSON(`https://${sl}.fandom.com/api.php?action=query&meta=siteinfo&format=json`); if (j.query) { fandom = `https://${sl}.fandom.com`; break; } } catch (e) {} }
+  if (fandom) { const api = fandom + '/api.php'; const picks = [];
+    try { const t = await mwSearch(api, base, 10); const vg = t.find(x => /\(video game\)|\(game\)|\(videojuego\)/i.test(x) && x.toLowerCase().startsWith(franchise.toLowerCase())) || t.find(x => x.toLowerCase() === franchise.toLowerCase()) || t[0]; if (vg) picks.push([vg, 'juego']); } catch (e) {}
+    for (const [q, kind] of [[base + ' walkthrough', 'guia'], [base + ' novel', 'novela'], [franchise + ' locations', 'lugares'], [base + ' characters', 'personajes']]) {
+      try { const t = await mwSearch(api, q, 6); const p = t.find(x => !picks.some(y => y[0] === x) && (kind !== 'novela' || /novel/i.test(x)) && (kind !== 'guia' || /walkthrough|guide|guia/i.test(x))); if (p) picks.push([p, kind]); } catch (e) {} }
+    for (const [t, kind] of picks.slice(0, 5)) { try { add(t + ' (Fandom)', `${fandom}/wiki/${encodeURIComponent(t.replace(/ /g, '_'))}`, await mwPage(api, t, kind === 'juego' ? 22000 : 12000), kind); } catch (e) {} } }
+  // StrategyWiki: tabla de contenidos = orden del walkthrough
+  try { const api = 'https://strategywiki.org/w/api.php'; const t = await mwSearch(api, franchise, 15); const root = (t.find(x => x.includes('/')) || t[0] || '').split('/')[0];
+    if (root) { const j = await getJSON(`${api}?action=parse&page=${encodeURIComponent(root + '/Table of Contents')}&prop=wikitext&format=json&formatversion=2`).catch(() => null);
+      const wt = (j && j.parse && j.parse.wikitext) || ''; const sec = wt.split(/\{\{h2\|/i).find(x => /walkthrough/i.test(x.slice(0, 80))) || wt; const chaps = [...sec.matchAll(/\*\s*\[\[([^|\]]+)/g)].map(m => m[1]).slice(0, 14);
+      if (chaps.length) { add(root + ' — orden del walkthrough (StrategyWiki)', `https://strategywiki.org/wiki/${encodeURIComponent((root + '/Table_of_Contents').replace(/ /g, '_'))}`, 'Orden de capítulos del walkthrough:\n' + chaps.map((c, k) => `${k + 1}. ${c.split('/').pop()}`).join('\n'), 'orden');
+        for (const c of chaps.slice(0, 10)) { try { add(c + ' (StrategyWiki)', `https://strategywiki.org/wiki/${encodeURIComponent(c.replace(/ /g, '_'))}`, (await mwPage(api, c, 5000)), 'guia'); } catch (e) {} } } } } catch (e) {}
+  // links manuales (pisan/suman)
+  for (const u0 of extra || []) { try { let u = u0; const d = u.match(/docs\.google\.com\/document\/d\/([\w-]+)/); if (d) u = `https://docs.google.com/document/d/${d[1]}/export?format=txt`; else u = normUrl(u);
+      const r = await fetch(u, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(30000) }); const ct = r.headers.get('content-type') || ''; const tx = await r.text();
+      add('Referencia manual: ' + u0.slice(0, 80), u0, (/html/.test(ct) ? htmlText(tx) : tx).slice(0, 40000), 'manual'); } catch (e) { out.sources.push({ title: 'NO SE PUDO BAJAR: ' + u0, url: u0, error: e.message }); } }
+  return out;
+}
+// ---------- v4: proyectos (como un proyecto de Premiere/Vegas): línea de tiempo + datos para re-editar sin rehacer el pipeline
+const PDIR = path.join(DATA, 'projects');
+const pid = x => String(x || '').replace(/[^\w\-]/g, '').slice(0, 80);
+function projFile(id) { return path.join(PDIR, pid(id) + '.json'); }
+function loadProject(id) { const f = projFile(id); return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null; }
+function writeProject(p) { p.updated = new Date().toISOString(); fs.writeFileSync(projFile(p.id) + '.tmp', JSON.stringify(p)); fs.renameSync(projFile(p.id) + '.tmp', projFile(p.id)); return p; }
+function cleanSpec(spec) { const { upload_url, callback_url, project, ...r } = spec; return r; }
+function saveProjectVersion(job) {
+  const spec = job.spec; const id = pid(spec.project.id);
+  const p = loadProject(id) || { id, created: new Date().toISOString(), versions: [] };
+  Object.assign(p, spec.project.data || {});
+  p.title = (spec.meta && spec.meta.title) || p.title;
+  p.spec = cleanSpec(spec);
+  const v = (p.versions.length ? Math.max(...p.versions.map(x => x.v)) : 0) + 1;
+  fs.mkdirSync(path.join(PDIR, id), { recursive: true });
+  fs.writeFileSync(path.join(PDIR, id, `v${v}.json`), JSON.stringify(p.spec));
+  p.versions.push({ v, at: new Date().toISOString(), job: job.id, youtube_id: (job.youtube && job.youtube.id) || null, notes: String(spec.project.notes || '').slice(0, 2000), render_s: Math.round((Date.now() - job.started) / 1000), cache_hits: job.cacheHits, scenes: job.total });
+  if (job.youtube && job.youtube.id) p.youtube_id = job.youtube.id;
+  p.assets = [...new Set([...(p.assets || []), ...job.assets])].filter(f => fs.existsSync(f));
+  p.scene_files = [...job.sceneFiles];
+  writeProject(p); job.projectVersion = v; log(job, `project ${id} v${v} saved`);
+}
+function listProjects() { return fs.readdirSync(PDIR).filter(n => n.endsWith('.json')).map(n => { try { const p = JSON.parse(fs.readFileSync(path.join(PDIR, n), 'utf8')); return { id: p.id, title: p.title, youtube_id: p.youtube_id || null, versions: (p.versions || []).length, updated: p.updated }; } catch (e) { return null; } }).filter(Boolean).sort((a, b) => String(b.updated).localeCompare(String(a.updated))); }
+function resolveProject(q) {
+  const L = listProjects(); q = String(q || '').trim(); if (!q) return L[0] || null;
+  const y = q.match(/(?:v=|youtu\.be\/|shorts\/|studio\.youtube\.com\/video\/)([\w-]{11})/); const yt = y ? y[1] : (/^[\w-]{11}$/.test(q) ? q : null);
+  const n = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return L.find(p => p.id === q) || (yt && L.find(p => p.youtube_id === yt)) || L.find(p => n(p.title).includes(n(q))) || L.find(p => n(p.id).includes(n(q))) || null;
+}
 
 async function cleanup() {
   const cutoff = Date.now() - 3 * 864e5;
-  for (const sub of ['jobs', 'cache']) {
+  // v4: los assets (gameplay, voz, música) y tomas de proyectos tocados en los últimos 45 días no se borran
+  const keep = new Set();
+  for (const n of fs.readdirSync(PDIR).filter(x => x.endsWith('.json'))) { try { const p = JSON.parse(fs.readFileSync(path.join(PDIR, n), 'utf8'));
+    if (Date.now() - Date.parse(p.updated || 0) < 45 * 864e5) [...(p.assets || []), ...(p.scene_files || [])].forEach(f => keep.add(f)); } catch (e) {} }
+  for (const sub of ['jobs', 'cache', 'scenes']) {
     for (const n of await fsp.readdir(path.join(DATA, sub)).catch(() => [])) {
-      const p = path.join(DATA, sub, n); const st = await fsp.stat(p).catch(() => null);
-      if (st && st.mtimeMs < cutoff) await fsp.rm(p, { recursive: true, force: true });
+      const p = path.join(DATA, sub, n); if (keep.has(p) || (busy && sub === 'jobs')) continue; const st = await fsp.stat(p).catch(() => null);
+      if (st && st.mtimeMs < (sub === 'scenes' ? Date.now() - 10 * 864e5 : cutoff)) await fsp.rm(p, { recursive: true, force: true });
     }
   }
   // pub: archivos grandes (mp4 de preview/pack) 10 días; miniaturas e imágenes 120 días (A/B diario las necesita)
@@ -326,7 +432,7 @@ async function inspectOne(url) {
     return { url, has_video: !!v, has_audio: (info.streams || []).some(s => s.codec_type === 'audio'), duration: parseFloat(info.format?.duration || 0), width: v?.width || null, height: v?.height || null };
   } catch (e) { return { url, error: e.message.slice(0, 300) }; }
 }
-function body(req) { return new Promise((res, rej) => { let b = ''; req.on('data', d => { b += d; if (b.length > 5e6) req.destroy(); }); req.on('end', () => { try { res(b ? JSON.parse(b) : {}); } catch (e) { rej(e); } }); }); }
+function body(req) { return new Promise((res, rej) => { let b = ''; req.on('data', d => { b += d; if (b.length > 40e6) req.destroy(); }); req.on('end', () => { try { res(b ? JSON.parse(b) : {}); } catch (e) { rej(e); } }); }); }
 function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); }
 
 http.createServer(async (req, res) => {
@@ -363,7 +469,24 @@ http.createServer(async (req, res) => {
       try { fs.linkSync(j.file, p.file); } catch (e) { await fsp.copyFile(j.file, p.file); }
       return send(res, 200, { url: p.url, file_url: p.url, size: fs.statSync(p.file).size });
     }
-    if (req.method === 'GET' && u.pathname === '/features') return send(res, 200, { v: 3, voice: 'spec.voice{enhance,cut,pad_start,pad_end,chain,loudnorm}', endpoints: ['PUT|POST /upload?name=', 'POST /frame?name=&t=', 'POST /publish/:job', 'GET /pub/:id/:name (público)'], scene: ['trans_in:flash|dip|glitch|whip|leak|burn|zoom', 'text_color'], spec: ['subtitles{srt,burn,style}', 'ducking{threshold,ratio,attack,release}'] });
+    if (req.method === 'POST' && u.pathname === '/refs') { // {game, extra_urls[], refresh} -> {key, cached, summary?, sections, sources}
+      const b = await body(req); const key = rkey(b.game); const f = path.join(RDIR, key + '.json');
+      if (!b.refresh && !(b.extra_urls || []).length && fs.existsSync(f)) { const c = JSON.parse(fs.readFileSync(f, 'utf8')); if (c.summary) return send(res, 200, { key, cached: true, ...c, sections: undefined }); }
+      const g = await gatherRefs(String(b.game || ''), b.extra_urls || []); const prev = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
+      const c = { ...prev, game: b.game, key, sources: g.sources, sections: g.sections, gathered: new Date().toISOString(), summary: (b.extra_urls || []).length || b.refresh ? null : prev.summary || null };
+      fs.writeFileSync(f, JSON.stringify(c)); return send(res, 200, { key, cached: false, ...c });
+    }
+    if ((pm = u.pathname.match(/^\/refs\/([\w\-]+)$/))) { const f = path.join(RDIR, pid(pm[1]) + '.json');
+      if (req.method === 'GET') return fs.existsSync(f) ? send(res, 200, JSON.parse(fs.readFileSync(f, 'utf8'))) : send(res, 404, { error: 'not found' });
+      if (req.method === 'PUT') { const b = await body(req); const c = Object.assign(fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {}, b, { key: pid(pm[1]), updated: new Date().toISOString() }); fs.writeFileSync(f, JSON.stringify(c)); return send(res, 200, { ok: true }); } }
+    if (req.method === 'GET' && u.pathname === '/projects') return send(res, 200, { projects: listProjects() });
+    if (req.method === 'GET' && u.pathname === '/projects/resolve') { const r = resolveProject(u.searchParams.get('q')); return r ? send(res, 200, loadProject(r.id)) : send(res, 404, { error: 'proyecto no encontrado', projects: listProjects().slice(0, 15) }); }
+    if ((pm = u.pathname.match(/^\/projects\/([\w\-]+)$/))) {
+      if (req.method === 'GET') { const p = loadProject(pm[1]); return p ? send(res, 200, p) : send(res, 404, { error: 'not found' }); }
+      if (req.method === 'PUT') { const b = await body(req); const p = Object.assign(loadProject(pm[1]) || { id: pid(pm[1]), created: new Date().toISOString(), versions: [] }, b, { id: pid(pm[1]) }); return send(res, 200, { ok: true, id: writeProject(p).id }); }
+    }
+    if (req.method === 'GET' && u.pathname === '/stats') { let disk = null; try { const f = fs.statfsSync(DATA); disk = { free_gb: +(f.bavail * f.bsize / 1e9).toFixed(1), total_gb: +(f.blocks * f.bsize / 1e9).toFixed(1) }; } catch (e) {} return send(res, 200, { disk, projects: listProjects().length, cache_files: fs.readdirSync(path.join(DATA, 'cache')).length, scene_files: fs.readdirSync(path.join(DATA, 'scenes')).length }); }
+    if (req.method === 'GET' && u.pathname === '/features') return send(res, 200, { v: 4, projects: 'GET /projects, GET /projects/resolve?q=, GET|PUT /projects/:id, spec.project{id,notes,data} guarda versión al terminar', fx: 'scene.fx[{type:punch|shake|glitch|flash|lower|title|stamp, at, dur, text, sub, z}]', voice: 'spec.voice{enhance,cut,pad_start,pad_end,chain,loudnorm}', endpoints: ['PUT|POST /upload?name=', 'POST /frame?name=&t=', 'POST /publish/:job', 'GET /pub/:id/:name (público)'], scene: ['trans_in:flash|dip|glitch|whip|leak|burn|zoom', 'text_color'], spec: ['subtitles{srt,burn,style}', 'ducking{threshold,ratio,attack,release}'] });
     if (req.method === 'GET' && u.pathname === '/library') return send(res, 200, { license: LIB.license, sfx: Object.fromEntries(Object.entries(LIB.sfx).map(([k, v]) => [k, v.desc])), music: Object.fromEntries(Object.entries(LIB.music).map(([k, v]) => [k, v.desc])) });
     if (req.method === 'POST' && u.pathname === '/prep-audio') {
       // returns a small mono mp3 of the narration for transcription (Whisper limit 25 MB)
