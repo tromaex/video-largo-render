@@ -307,7 +307,8 @@ async function cleanup() {
   // pub: archivos grandes (mp4 de preview/pack) 10 días; miniaturas e imágenes 120 días (A/B diario las necesita)
   for (const n of await fsp.readdir(path.join(DATA, 'pub')).catch(() => [])) {
     const d = path.join(DATA, 'pub', n);
-    for (const f of await fsp.readdir(d).catch(() => [])) {
+    if (fs.existsSync(path.join(d, '.keep'))) continue;
+    for (const f of (await fsp.readdir(d).catch(() => [])).filter(x => x !== '.keep')) {
       const st = await fsp.stat(path.join(d, f)).catch(() => null); if (!st) continue;
       const age = Date.now() - st.mtimeMs;
       if (age > 120 * 864e5 || (st.size > 20e6 && age > 10 * 864e5)) await fsp.rm(d, { recursive: true, force: true });
@@ -341,6 +342,7 @@ http.createServer(async (req, res) => {
     if ((req.method === 'POST' || req.method === 'PUT') && u.pathname === '/upload') {
       // v3: hosting propio (reemplaza fal storage). Body binario -> URL pública /pub/<id>/<name>
       const p = pubSave(u.searchParams.get('name') || 'file.bin'); await saveBody(req, p.file);
+      if (u.searchParams.get('keep') === '1') fs.writeFileSync(path.join(path.dirname(p.file), '.keep'), '');
       const size = fs.statSync(p.file).size; if (!size) { fs.rmSync(path.dirname(p.file), { recursive: true, force: true }); return send(res, 400, { error: 'empty body' }); }
       return send(res, 200, { url: p.url, file_url: p.url, size });
     }
