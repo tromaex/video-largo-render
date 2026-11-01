@@ -199,6 +199,18 @@ async function renderScene(job, s, i, dir) {
   }
   const c = Math.min(0.3, Math.max(0, +src.crop || 0));
   let vf = `fps=${FPS},` + (c ? `crop=iw*${(1 - c).toFixed(3)}:ih*${(1 - c).toFixed(3)},` : '');
+  // v6: quitar una marca incrustada en la esquina superior derecha sin recortar el HUD.
+  // Las coordenadas y dimensiones son proporcionales (0..1) al cuadro final.
+  const dl = src.delogo || null;
+  if (dl && dl.enabled !== false) {
+    const nx = v => Math.max(0, Math.min(0.98, Number(v ?? 0)));
+    const nw = Math.max(0.01, Math.min(0.5, Number(dl.w ?? 0.20)));
+    const nh = Math.max(0.01, Math.min(0.5, Number(dl.h ?? 0.10)));
+    const x = dl.x === 'right' ? 1 - nw - Number(dl.margin ?? 0.01) : nx(dl.x ?? 0.78);
+    const y = nx(dl.y ?? 0.01);
+    const band = Math.max(1, Math.min(80, Math.round(Number(dl.band ?? 12))));
+    vf += `delogo=x=${Math.round(W * x)}:y=${Math.round(H * y)}:w=${Math.round(W * nw)}:h=${Math.round(H * nh)}:band=${band}:show=0,`;
+  }
   if ((s.crt3d || src.frame === 'crt') && LIB.crt3d) { // v5: TV CRT en un cuarto (zoom 3D a la pantalla, o logo/imagen en la tele)
     const rf = await download(LIB.crt3d.room, job), bf = await download(LIB.crt3d.bezel, job);
     const cc = s.crt3d ? { ...s.crt3d } : { type: 'in', pmax: 0.62, fit: true, scan: true, bg: src.crt_bg || '0x0b0b0b', zoom_dur: Math.max(1.5, dur - 0.3), hold: 0.15 };
@@ -626,7 +638,7 @@ http.createServer(async (req, res) => {
       if (req.method === 'PUT') { const b = await body(req); const p = Object.assign(loadProject(pm[1]) || { id: pid(pm[1]), created: new Date().toISOString(), versions: [] }, b, { id: pid(pm[1]) }); return send(res, 200, { ok: true, id: writeProject(p).id }); }
     }
     if (req.method === 'GET' && u.pathname === '/stats') { let disk = null; try { const f = fs.statfsSync(DATA); disk = { free_gb: +(f.bavail * f.bsize / 1e9).toFixed(1), total_gb: +(f.blocks * f.bsize / 1e9).toFixed(1) }; } catch (e) {} return send(res, 200, { disk, projects: listProjects().length, cache_files: fs.readdirSync(path.join(DATA, 'cache')).length, scene_files: fs.readdirSync(path.join(DATA, 'scenes')).length }); }
-    if (req.method === 'GET' && u.pathname === '/features') return send(res, 200, { v: 5, v5: 'GET|POST /memes (biblioteca /data/memes), POST /assets/find, POST /ytdlp, PUT /lib/:file, source.frame reel|crt|meme, scene.crt3d{type:in|out,zoom_dur,hold}, spec.mute[{start,end}]', projects: 'GET /projects, GET /projects/resolve?q=, GET|PUT /projects/:id, spec.project{id,notes,data} guarda versión al terminar', fx: 'scene.fx[{type:punch|shake|glitch|flash|lower|title|stamp, at, dur, text, sub, z}]', voice: 'spec.voice{enhance,cut,pad_start,pad_end,chain,loudnorm}', endpoints: ['PUT|POST /upload?name=', 'POST /frame?name=&t=', 'POST /publish/:job', 'GET /pub/:id/:name (público)'], scene: ['trans_in:flash|dip|glitch|whip|leak|burn|zoom', 'text_color'], spec: ['subtitles{srt,burn,style}', 'ducking{threshold,ratio,attack,release}'] });
+    if (req.method === 'GET' && u.pathname === '/features') return send(res, 200, { v: 5, v5: 'GET|POST /memes (biblioteca /data/memes), POST /assets/find, POST /ytdlp, PUT /lib/:file, source.frame reel|crt|meme, source.delogo{enabled,x,y,w,h,band}, scene.crt3d{type:in|out,zoom_dur,hold}, spec.mute[{start,end}]', projects: 'GET /projects, GET /projects/resolve?q=, GET|PUT /projects/:id, spec.project{id,notes,data} guarda versión al terminar', fx: 'scene.fx[{type:punch|shake|glitch|flash|lower|title|stamp, at, dur, text, sub, z}]', voice: 'spec.voice{enhance,cut,pad_start,pad_end,chain,loudnorm}', endpoints: ['PUT|POST /upload?name=', 'POST /frame?name=&t=', 'POST /publish/:job', 'GET /pub/:id/:name (público)'], scene: ['trans_in:flash|dip|glitch|whip|leak|burn|zoom', 'text_color'], spec: ['subtitles{srt,burn,style}', 'ducking{threshold,ratio,attack,release}'] });
     if (req.method === 'GET' && u.pathname === '/library') return send(res, 200, { license: LIB.license, sfx: Object.fromEntries(Object.entries(LIB.sfx).map(([k, v]) => [k, v.desc])), music: Object.fromEntries(Object.entries(LIB.music).map(([k, v]) => [k, v.desc])) });
     if (req.method === 'POST' && u.pathname === '/prep-audio') {
       // returns a small mono mp3 of the narration for transcription (Whisper limit 25 MB)
